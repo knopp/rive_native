@@ -10,6 +10,27 @@ bool usePLS = true;
 // Forward declaration for linker dummy function
 void linkDummyMethods();
 
+// During resizing the main loop runs exclusively in FlutterRunLoopMode
+// which is not pumping main dispatch queue.
+static void performBlockOnMainThread(void (^block)(void))
+{
+    __block BOOL didRun = NO;
+    CFRunLoopRef mainLoop = CFRunLoopGetMain();
+    CFRunLoopPerformBlock(mainLoop, kCFRunLoopDefaultMode, ^{
+      if (didRun)
+        return;
+      didRun = YES;
+      block();
+    });
+    CFRunLoopPerformBlock(mainLoop, CFSTR("FlutterRunLoopMode"), ^{
+      if (didRun)
+        return;
+      didRun = YES;
+      block();
+    });
+    CFRunLoopWakeUp(mainLoop);
+}
+
 #pragma mark - RiveNativeRenderTexture
 
 @interface RiveNativeRenderTexture ()
@@ -302,7 +323,7 @@ void preCommitCallback(id<MTLCommandBuffer> commandBuffer,
           // https://api.flutter.dev/ios-embedder/protocol_flutter_texture_registry-p.html
           // See issue:
           // https://github.com/flutter-webrtc/flutter-webrtc/issues/1914
-          dispatch_async(dispatch_get_main_queue(), ^{
+          performBlockOnMainThread(^{
             riveLock();
             if (rt->_riveRenderer != nullptr)
             {
