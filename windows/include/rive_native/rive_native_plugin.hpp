@@ -64,10 +64,12 @@ public:
     }
 
     static void RegisterWithRegistrar(
-        flutter::PluginRegistrarWindows* registrar);
+        flutter::PluginRegistrarWindows* registrar,
+        FlutterDesktopPluginRegistrarRef registrar_ref);
 
     RiveNativePlugin(
         flutter::PluginRegistrarWindows* registrar,
+        FlutterDesktopPluginRegistrarRef registrar_ref,
         std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
             channel,
         flutter::TextureRegistrar* texture_registrar);

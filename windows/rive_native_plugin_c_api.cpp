@@ -10,5 +10,5 @@ void RiveNativePluginRegisterWithRegistrar(
 {
     RiveNativePlugin::RegisterWithRegistrar(
         flutter::PluginRegistrarManager::GetInstance()
-            ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar));
+            ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar), registrar);
 }

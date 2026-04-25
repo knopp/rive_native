@@ -155,10 +155,12 @@ RiveNativeRenderTexture::~RiveNativeRenderTexture()
 }
 
 void RiveNativePlugin::RegisterWithRegistrar(
-    flutter::PluginRegistrarWindows* registrar)
+    flutter::PluginRegistrarWindows* registrar,
+    FlutterDesktopPluginRegistrarRef registrar_ref)
 {
     auto plugin = std::make_unique<RiveNativePlugin>(
         registrar,
+        registrar_ref,
         std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
             registrar->messenger(),
             "rive_native",
@@ -184,8 +186,40 @@ class AudioEngine;
 
 EXPORT void rewindRenderPath(rive::RenderPath* path);
 
+namespace {
+
+typedef IDXGIAdapter *(*GetAdapterFunc)(FlutterDesktopPluginRegistrarRef);
+
+GetAdapterFunc LoadFlutterDesktopPluginRegistrarGetGraphicsAdapter() {
+    HMODULE module = LoadLibraryA("flutter_windows.dll");
+    if (module) {
+        return reinterpret_cast<GetAdapterFunc>(
+            GetProcAddress(module, "FlutterDesktopPluginRegistrarGetGraphicsAdapter")
+        );
+    }
+    return nullptr;
+}
+
+static IDXGIAdapter *
+GetGraphicsAdapter(FlutterDesktopPluginRegistrarRef registrar) {
+    static GetAdapterFunc getAdapterFunc = LoadFlutterDesktopPluginRegistrarGetGraphicsAdapter();
+    if (getAdapterFunc)
+    {
+        return getAdapterFunc(registrar);
+    }
+    // On older Flutter versions fallback to getting the adapter from the view.
+    FlutterDesktopViewRef view = FlutterDesktopPluginRegistrarGetView(registrar);
+    if (view)
+    {
+        return FlutterDesktopViewGetGraphicsAdapter(view);
+    }
+    return nullptr;
+}
+}
+
 RiveNativePlugin::RiveNativePlugin(
     flutter::PluginRegistrarWindows* registrar,
+    FlutterDesktopPluginRegistrarRef registrar_ref,
     std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel,
     flutter::TextureRegistrar* texture_registrar) :
     m_registrar(registrar),
@@ -207,17 +241,7 @@ RiveNativePlugin::RiveNativePlugin(
         __uuidof(IDXGIFactory2),
         reinterpret_cast<void**>(factory.ReleaseAndGetAddressOf()));
 
-    auto view =
-        static_cast<flutter::PluginRegistrarWindows*>(registrar)->GetView();
-    if (view == nullptr)
-    {
-        error("Rive failed to find a Flutter View.");
-        return;
-    }
-    auto desiredAdapter =
-        static_cast<flutter::PluginRegistrarWindows*>(registrar)
-            ->GetView()
-            ->GetGraphicsAdapter();
+    IDXGIAdapter *desiredAdapter = GetGraphicsAdapter(registrar_ref);
     if (desiredAdapter == nullptr)
     {
         error("Rive failed to find a Graphics Adapter.");
@@ -251,7 +275,7 @@ RiveNativePlugin::RiveNativePlugin(
         info("Failed to init device with adapter, will try default: {}",
              convertWindowsString(desiredDesc.Description));
         D3D11CreateDevice(NULL,
-                          D3D_DRIVER_TYPE_UNKNOWN,
+                          D3D_DRIVER_TYPE_HARDWARE,
                           NULL,
                           creationFlags,
                           featureLevels,
