@@ -213,8 +213,10 @@ GetGraphicsAdapter(FlutterDesktopPluginRegistrarRef registrar, IDXGIAdapter** ad
     {
         *adapter = FlutterDesktopViewGetGraphicsAdapter(view);
         return *adapter != nullptr;
+    } else {
+        error("Rive failed to find a Flutter View.");
+        return false;
     }
-    return false;
 }
 }
 
