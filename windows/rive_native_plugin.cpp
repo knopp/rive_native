@@ -188,7 +188,7 @@ EXPORT void rewindRenderPath(rive::RenderPath* path);
 
 namespace {
 
-typedef IDXGIAdapter *(*GetAdapterFunc)(FlutterDesktopPluginRegistrarRef);
+typedef bool *(*GetAdapterFunc)(FlutterDesktopPluginRegistrarRef, IDXGIAdapter**);
 
 GetAdapterFunc LoadFlutterDesktopPluginRegistrarGetGraphicsAdapter() {
     HMODULE module = LoadLibraryA("flutter_windows.dll");
@@ -200,20 +200,21 @@ GetAdapterFunc LoadFlutterDesktopPluginRegistrarGetGraphicsAdapter() {
     return nullptr;
 }
 
-static IDXGIAdapter *
-GetGraphicsAdapter(FlutterDesktopPluginRegistrarRef registrar) {
+static bool
+GetGraphicsAdapter(FlutterDesktopPluginRegistrarRef registrar, IDXGIAdapter** adapter) {
     static GetAdapterFunc getAdapterFunc = LoadFlutterDesktopPluginRegistrarGetGraphicsAdapter();
     if (getAdapterFunc)
     {
-        return getAdapterFunc(registrar);
+        return getAdapterFunc(registrar, adapter);
     }
     // On older Flutter versions fallback to getting the adapter from the view.
     FlutterDesktopViewRef view = FlutterDesktopPluginRegistrarGetView(registrar);
     if (view)
     {
-        return FlutterDesktopViewGetGraphicsAdapter(view);
+        *adapter = FlutterDesktopViewGetGraphicsAdapter(view);
+        return *adapter != nullptr;
     }
-    return nullptr;
+    return false;
 }
 }
 
@@ -241,8 +242,8 @@ RiveNativePlugin::RiveNativePlugin(
         __uuidof(IDXGIFactory2),
         reinterpret_cast<void**>(factory.ReleaseAndGetAddressOf()));
 
-    IDXGIAdapter *desiredAdapter = GetGraphicsAdapter(registrar_ref);
-    if (desiredAdapter == nullptr)
+    ComPtr<IDXGIAdapter> desiredAdapter;
+    if (!GetGraphicsAdapter(registrar_ref, desiredAdapter.GetAddressOf()))
     {
         error("Rive failed to find a Graphics Adapter.");
         return;
@@ -260,7 +261,7 @@ RiveNativePlugin::RiveNativePlugin(
     D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_1};
     UINT creationFlags = 0;
 
-    HRESULT result = D3D11CreateDevice(desiredAdapter,
+    HRESULT result = D3D11CreateDevice(desiredAdapter.Get(),
                                        D3D_DRIVER_TYPE_UNKNOWN,
                                        NULL,
                                        creationFlags,
