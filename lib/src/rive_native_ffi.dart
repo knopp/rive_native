@@ -165,6 +165,9 @@ base class _NativeRenderTexture extends RenderTexture {
     final textureId = textureIdPtr.value;
     _rendererPtr = Pointer<Void>.fromAddress(renderPtr.value);
 
+    malloc.free(textureIdPtr);
+    malloc.free(renderPtr);
+
     _allTextures.add(textureId);
 
     if (_textureId != -1) {
