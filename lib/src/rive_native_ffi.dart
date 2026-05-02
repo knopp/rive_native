@@ -14,6 +14,7 @@ import 'package:rive_native/rive_native.dart';
 import 'package:rive_native/src/ffi/dynamic_library_helper.dart';
 import 'package:rive_native/src/ffi/rive_renderer_ffi.dart';
 import 'package:rive_native/src/rive.dart' as rive;
+import 'dart:math' show max;
 
 final DynamicLibrary nativeLib = DynamicLibraryHelper.nativeLib;
 
@@ -71,6 +72,16 @@ final void Function(Pointer<Void>) _destroyHeadlessContext = nativeLib
     .lookup<NativeFunction<Void Function(Pointer<Void>)>>(
         'destroyHeadlessContext')
     .asFunction();
+final void Function(int, int, Pointer<Int64>, Pointer<Int64>) _createTexture =
+    nativeLib
+        .lookup<
+            NativeFunction<
+                Void Function(Int64, Int64, Pointer<Int64>,
+                    Pointer<Int64>)>>('createTexture')
+        .asFunction();
+final void Function(int) _removeTexture = nativeLib
+    .lookup<NativeFunction<Void Function(Int64)>>('removeTexture')
+    .asFunction();
 
 base class _NativeRenderTexture extends RenderTexture {
   @override
@@ -121,7 +132,7 @@ base class _NativeRenderTexture extends RenderTexture {
     var textures = _deadTextures.toList();
     _deadTextures.clear();
     for (final texture in textures) {
-      methodChannel.invokeMethod('removeTexture', {'id': texture});
+      _removeTexture(texture);
     }
   }
 
@@ -136,36 +147,35 @@ base class _NativeRenderTexture extends RenderTexture {
   }
 
   @override
-  Future<void> makeRenderTexture(int width, int height) async {
+  void makeRenderTexture(int width, int height) {
     assert(width >= 0 && height >= 0,
         'Rive render texture width and height must be greater than or equal to 0. Width: $width, Height: $height');
     // Immediately update cached values in-case we redraw during udpate.
     _width = width;
     _height = height;
-    final result = await methodChannel.invokeMethod('createTexture', {
-      'width': width == 0 ? 1 : width,
-      'height': height == 0 ? 1 : height,
-    });
+
+    final textureIdPtr = malloc<Int64>();
+    final renderPtr = malloc<Int64>();
+
+    _createTexture(max(width, 1), max(height, 1), textureIdPtr, renderPtr);
+
     _actualWidth = width;
     _actualHeight = height;
-    int? textureId = result['textureId'] as int?;
-    String renderer = result['renderer'] as String;
-    _rendererPtr = Pointer<Void>.fromAddress(
-        int.parse(renderer.substring(renderer.indexOf('x') + 1), radix: 16));
 
-    if (textureId != null) {
-      _allTextures.add(textureId);
-    }
+    final textureId = textureIdPtr.value;
+    _rendererPtr = Pointer<Void>.fromAddress(renderPtr.value);
+
+    malloc.free(textureIdPtr);
+    malloc.free(renderPtr);
+
+    _allTextures.add(textureId);
+
     if (_textureId != -1) {
       _allTextures.remove(_textureId);
       _disposeTexture(_textureId);
     }
 
-    if (textureId == null) {
-      _textureId = -1;
-    } else {
-      _textureId = textureId;
-    }
+    _textureId = textureId;
   }
 
   @override
@@ -494,29 +504,25 @@ class _RiveNativeViewRenderObject extends RiveNativeRenderBox
 
     if (renderTexture.needsResize(width, height) || renderTexture.isDisposed) {
       _isCreatingTexture = true;
-      renderTexture.makeRenderTexture(width, height).then((_) {
-        // Check if the render object is still attached and not disposed
-        if (!attached) {
-          return;
-        }
-        rivePainter?.textureChanged();
-        renderTexture.textureChanged();
+      renderTexture.makeRenderTexture(width, height);
 
-        // Texture id will have changed...
-        markNeedsPaint();
+      // Check if the render object is still attached and not disposed
+      if (!attached) {
+        return;
+      }
+      rivePainter?.textureChanged();
+      renderTexture.textureChanged();
 
-        // A new layout was requested while the texture was being created
-        // so we need to create the latest.
-        if (_markNeedsTextureCreation) {
-          markNeedsLayout();
-        }
-        _isCreatingTexture = false;
-        _markNeedsTextureCreation = false;
-      }).onError((error, stackTrace) {
-        debugPrint('$error $stackTrace');
-        _isCreatingTexture = false;
-        _markNeedsTextureCreation = false;
-      });
+      // Texture id will have changed...
+      markNeedsPaint();
+
+      // A new layout was requested while the texture was being created
+      // so we need to create the latest.
+      if (_markNeedsTextureCreation) {
+        markNeedsLayout();
+      }
+      _isCreatingTexture = false;
+      _markNeedsTextureCreation = false;
     }
   }
 

@@ -174,7 +174,7 @@ base class _WebRenderTexture extends RenderTexture {
   int get actualHeight => canvasElement.height;
 
   @override
-  Future<void> makeRenderTexture(int width, int height) {
+  void makeRenderTexture(int width, int height) {
     throw UnimplementedError();
   }
 

@@ -24,6 +24,11 @@ void preCommitCallback(id<MTLCommandBuffer> /*commandBuffer*/,
 {
     // Intentionally empty/no-op for shared builds as they're used for testing.
 }
+void preFlushCallback(id<MTLCommandBuffer> /*commandBuffer*/,
+                       void* /*nativeRenderTexture*/)
+{
+    // Intentionally empty/no-op for shared builds as they're used for testing.
+}
 #endif
 
 class MetalTextureRenderer
@@ -33,14 +38,10 @@ public:
                          void* textureRegistryRetainedCF,
                          RiveNativeRendererContext* rendererContext,
                          id<MTLCommandQueue> queueARC,
-                         ReadWriteRing* ring,
-                         id<MTLTexture> texture0ARC,
-                         id<MTLTexture> texture1ARC,
-                         id<MTLTexture> texture2ARC,
+                         id<MTLTexture> textureARC,
                          uint32_t width,
                          uint32_t height) :
         m_textureRegistryRetainedCF(textureRegistryRetainedCF),
-        m_ring(ring),
         m_nativeRenderTextureRetainedCF(nativeRenderTextureRetainedCF),
         m_renderContext(rive::ref_rcp(rendererContext)),
         m_queue(queueARC),
@@ -50,15 +51,9 @@ public:
         auto renderCtxImpl =
             m_renderContext->actual
                 ->static_impl_cast<rive::gpu::RenderContextMetalImpl>();
-        m_renderTarget[0] = renderCtxImpl->makeRenderTarget(
+        m_renderTarget = renderCtxImpl->makeRenderTarget(
             MTLPixelFormatBGRA8Unorm, width, height);
-        m_renderTarget[0]->setTargetTexture(texture0ARC);
-        m_renderTarget[1] = renderCtxImpl->makeRenderTarget(
-            MTLPixelFormatBGRA8Unorm, width, height);
-        m_renderTarget[1]->setTargetTexture(texture1ARC);
-        m_renderTarget[2] = renderCtxImpl->makeRenderTarget(
-            MTLPixelFormatBGRA8Unorm, width, height);
-        m_renderTarget[2]->setTargetTexture(texture2ARC);
+        m_renderTarget->setTargetTexture(textureARC);
         m_renderer =
             std::make_unique<rive::RiveRenderer>(m_renderContext->actual.get());
     }
@@ -80,12 +75,8 @@ public:
         // constructing).
     }
 
-    uint32_t m_currentWriteIndex = 0;
-
     void begin(bool clear, uint32_t color)
     {
-        uint32_t writeIndex = m_ring->nextWrite();
-        m_currentWriteIndex = writeIndex;
         m_renderContext->actual->beginFrame({
             .renderTargetWidth = m_width,
             .renderTargetHeight = m_height,
@@ -97,16 +88,17 @@ public:
 
     id<MTLTexture> currentTargetTexture()
     {
-        return m_renderTarget[m_currentWriteIndex]->targetTexture();
+        return m_renderTarget->targetTexture();
     }
 
     void end(float devicePixelRatio)
     {
         id<MTLCommandBuffer> flushCommandBuffer = [m_queue commandBuffer];
+        preFlushCallback(flushCommandBuffer,
+                          m_nativeRenderTextureRetainedCF);
         m_renderContext->actual->flush(
-            {.renderTarget = m_renderTarget[m_currentWriteIndex].get(),
+            {.renderTarget = m_renderTarget.get(),
              .externalCommandBuffer = (__bridge void*)flushCommandBuffer});
-
         preCommitCallback(flushCommandBuffer,
                           m_nativeRenderTextureRetainedCF,
                           (void*)this,
@@ -124,17 +116,14 @@ public:
         return m_renderContext.get();
     }
 
-    ReadWriteRing* ring() { return m_ring; }
-
 private:
     // retained CF pointer to Obj-C registry
     void* m_textureRegistryRetainedCF = nullptr;
-    ReadWriteRing* m_ring = nullptr;
     // retained CF pointer to Obj-C texture wrapper
     void* m_nativeRenderTextureRetainedCF = nullptr;
     id<MTLCommandQueue> m_queue = nil; // ARC-managed
     rive::rcp<RiveNativeRendererContext> m_renderContext;
-    rive::rcp<rive::gpu::RenderTargetMetal> m_renderTarget[3];
+    rive::rcp<rive::gpu::RenderTargetMetal> m_renderTarget;
     std::unique_ptr<rive::RiveRenderer> m_renderer;
     uint32_t m_width = 0;
     uint32_t m_height = 0;
@@ -175,10 +164,7 @@ PLUGIN_API void* createRiveRenderer(void* textureRegistryRetainedCF,
                                     void* riveRenderContext,
                                     void* nativeRenderTextureRetainedCF,
                                     void* queueBridged,
-                                    ReadWriteRing* ring,
-                                    void* texture0Bridged,
-                                    void* texture1Bridged,
-                                    void* texture2Bridged,
+                                    void* texture0,
                                     uint32_t width,
                                     uint32_t height)
 {
@@ -186,19 +172,14 @@ PLUGIN_API void* createRiveRenderer(void* textureRegistryRetainedCF,
 
     // Convert bridged CF pointers into ARC objects
     id<MTLCommandQueue> queueARC = (__bridge id<MTLCommandQueue>)queueBridged;
-    id<MTLTexture> tex0ARC = (__bridge id<MTLTexture>)texture0Bridged;
-    id<MTLTexture> tex1ARC = (__bridge id<MTLTexture>)texture1Bridged;
-    id<MTLTexture> tex2ARC = (__bridge id<MTLTexture>)texture2Bridged;
+    id<MTLTexture> texARC = (__bridge id<MTLTexture>)texture0;
 
     MetalTextureRenderer* context =
         new MetalTextureRenderer(nativeRenderTextureRetainedCF,
                                  textureRegistryRetainedCF,
                                  (RiveNativeRendererContext*)riveRenderContext,
                                  queueARC,
-                                 ring,
-                                 tex0ARC,
-                                 tex1ARC,
-                                 tex2ARC,
+                                 texARC,
                                  width,
                                  height);
 
