@@ -15,16 +15,20 @@ void linkDummyMethods();
 @interface RiveNativeRenderTexture ()
 {
     CVMetalTextureCacheRef _metalTextureCache;
-    CVMetalTextureRef _metalTextureCVRef[3];
+    CVMetalTextureRef _metalTextureCVRef;
 @public
-    id<MTLTexture> _metalTexture[3];
+    id<MTLTexture> _metalTexture;
 @public
-    MTLRenderPassDescriptor* _passDescriptor[3];
-    CVPixelBufferRef _pixelData[3];
+    MTLRenderPassDescriptor* _passDescriptor;
+    CVPixelBufferRef _pixelData;
+
+    std::mutex _mutex;
+    id<MTLEvent> _event;
+    int64_t _eventValue;
+    int64_t _eventToSignalInPreCommit;
 
     // Rive/C++ interop
     void* _riveRenderer;
-    ReadWriteRing _readWriteRing;
 }
 @end
 
@@ -53,45 +57,44 @@ void linkDummyMethods();
         {
             NSLog(@"CVMetalTextureCacheCreate error %d", (int)status);
         }
-        for (int i = 0; i < 3; i++)
+        status = CVPixelBufferCreate(kCFAllocatorDefault,
+                                     width,
+                                     height,
+                                     kCVPixelFormatType_32BGRA,
+                                     (__bridge CFDictionaryRef)options,
+                                     &_pixelData);
+        if (status != kCVReturnSuccess)
         {
-            status = CVPixelBufferCreate(kCFAllocatorDefault,
-                                         width,
-                                         height,
-                                         kCVPixelFormatType_32BGRA,
-                                         (__bridge CFDictionaryRef)options,
-                                         &_pixelData[i]);
-            if (status != kCVReturnSuccess)
-            {
-                NSLog(@"CVPixelBufferCreate error %d", (int)status);
-            }
-
-            status = CVMetalTextureCacheCreateTextureFromImage(
-                kCFAllocatorDefault,
-                _metalTextureCache,
-                _pixelData[i],
-                nil,
-                MTLPixelFormatBGRA8Unorm,
-                width,
-                height,
-                0,
-                &_metalTextureCVRef[i]);
-            if (status != kCVReturnSuccess)
-            {
-                NSLog(@"CVMetalTextureCacheCreateTextureFromImage error %d",
-                      (int)status);
-            }
-            _metalTexture[i] = CVMetalTextureGetTexture(_metalTextureCVRef[i]);
-            // make 3 of these...
-            _passDescriptor[i] = [MTLRenderPassDescriptor renderPassDescriptor];
-            _passDescriptor[i].colorAttachments[0].texture = _metalTexture[i];
-            _passDescriptor[i].colorAttachments[0].loadAction =
-                MTLLoadActionClear;
-            _passDescriptor[i].colorAttachments[0].storeAction =
-                MTLStoreActionStore;
-            _passDescriptor[i].colorAttachments[0].clearColor =
-                MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+            NSLog(@"CVPixelBufferCreate error %d", (int)status);
         }
+
+        status =
+            CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault,
+                                                      _metalTextureCache,
+                                                      _pixelData,
+                                                      nil,
+                                                      MTLPixelFormatBGRA8Unorm,
+                                                      width,
+                                                      height,
+                                                      0,
+                                                      &_metalTextureCVRef);
+        if (status != kCVReturnSuccess)
+        {
+            NSLog(@"CVMetalTextureCacheCreateTextureFromImage error %d",
+                  (int)status);
+        }
+        _metalTexture = CVMetalTextureGetTexture(_metalTextureCVRef);
+        // make 3 of these...
+        _passDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+        _passDescriptor.colorAttachments[0].texture = _metalTexture;
+        _passDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+        _passDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+        _passDescriptor.colorAttachments[0].clearColor =
+            MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+
+        _event = [device newEvent];
+        _eventValue = 0;
+        _eventToSignalInPreCommit = 0;
 
         // Register with Flutter
         _flutterTextureId = [registry registerTexture:self];
@@ -104,19 +107,14 @@ void linkDummyMethods();
         void* registry_retained = (__bridge_retained void*)registry;
         void* self_retained = (__bridge_retained void*)self;
         void* queue_bridged = (__bridge void*)commandQueue;
-        void* tex0_bridged = (__bridge void*)_metalTexture[0];
-        void* tex1_bridged = (__bridge void*)_metalTexture[1];
-        void* tex2_bridged = (__bridge void*)_metalTexture[2];
+        void* tex_bridged = (__bridge void*)_metalTexture;
 
         _riveRenderer = createRiveRenderer(
             registry_retained,
             context, // already a C pointer owned by C++ context
             self_retained,
             queue_bridged,
-            &_readWriteRing,
-            tex0_bridged,
-            tex1_bridged,
-            tex2_bridged,
+            tex_bridged,
             width,
             height);
         // NOTE: Do NOT CFRelease any of the *_retained pointers here.
@@ -151,21 +149,19 @@ void linkDummyMethods();
     [self destroyRenderer];
 
     // Release CV/Metal resources
-    for (int i = 0; i < 3; i++)
+    _passDescriptor = nil;
+    _metalTexture = nil;
+    if (_metalTextureCVRef)
     {
-        _passDescriptor[i] = nil;
-        _metalTexture[i] = nil;
-        if (_metalTextureCVRef[i])
-        {
-            CFRelease(_metalTextureCVRef[i]);
-            _metalTextureCVRef[i] = nil;
-        }
-        if (_pixelData[i])
-        {
-            CVPixelBufferRelease(_pixelData[i]);
-            _pixelData[i] = nil;
-        }
+        CFRelease(_metalTextureCVRef);
+        _metalTextureCVRef = nil;
     }
+    if (_pixelData)
+    {
+        CVPixelBufferRelease(_pixelData);
+        _pixelData = nil;
+    }
+
     if (_metalTextureCache)
     {
         CFRelease(_metalTextureCache);
@@ -177,10 +173,19 @@ void linkDummyMethods();
 
 - (CVPixelBufferRef)copyPixelBuffer
 {
-    int readIndex = _readWriteRing.currentRead();
-    CVPixelBufferRef data = _pixelData[readIndex];
+    CVPixelBufferRef data = _pixelData;
     CVBufferRetain(data);
     return data;
+}
+
+- (id<MTLEvent>)copyEventWithValue:(uint64_t*)value
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    *value = _eventValue;
+    // The event will be signalled when Flutter is done with the texture.
+    // This is the value Rive will wait for before next render.
+    _eventValue += 1;
+    return _event;
 }
 
 @end
@@ -199,6 +204,8 @@ void linkDummyMethods();
 @end
 
 @implementation RiveNativePlugin
+
+static RiveNativePlugin* _instance;
 
 - (instancetype)initWithTextures:(NSObject<FlutterTextureRegistry>*)textures
 {
@@ -219,6 +226,8 @@ void linkDummyMethods();
 
         setGPU((__bridge void*)_metalDevice,
                (__bridge void*)_metalCommandQueue);
+
+        _instance = self;
     }
     return self;
 }
@@ -260,6 +269,18 @@ void linkDummyMethods();
 
 #pragma mark - C callback into Obj-C (used by C++)
 
+void preFlushCallback(id<MTLCommandBuffer> commandBuffer,
+                      void* nativeRenderTexture)
+{
+    // Encode wait before rendering to make sure that Flutter is done
+    // with the texture.
+    auto rt = (__bridge RiveNativeRenderTexture*)nativeRenderTexture;
+    std::lock_guard<std::mutex> lock(rt->_mutex);
+    [commandBuffer encodeWaitForEvent:rt->_event value:rt->_eventValue];
+    ++rt->_eventValue;
+    rt->_eventToSignalInPreCommit = rt->_eventValue;
+}
+
 void preCommitCallback(id<MTLCommandBuffer> commandBuffer,
                        void* nativeRenderTexture,
                        void* renderer,
@@ -267,106 +288,57 @@ void preCommitCallback(id<MTLCommandBuffer> commandBuffer,
 {
     // Retain the bridged CF pointers for the duration of the completion
     // handler to guarantee lifetime across async boundary.
-    if (nativeRenderTexture)
-    {
-        CFRetain(nativeRenderTexture);
-    }
-    if (textureRegistry)
-    {
-        CFRetain(textureRegistry);
-    }
 
-    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull cb) {
-      @autoreleasepool
-      {
-          // Bridge to Obj-C references. CFRetain kept them alive until now.
-          auto rt = (__bridge RiveNativeRenderTexture*)nativeRenderTexture;
-          auto flutterTextureRegistry =
-              (__bridge NSObject<FlutterTextureRegistry>*)textureRegistry;
+    auto rt = (__bridge RiveNativeRenderTexture*)nativeRenderTexture;
 
-          // Guard: renderer might have been destroyed during teardown.
-          if (!rt || !flutterTextureRegistry)
-          {
-              if (nativeRenderTexture)
-              {
-                  CFRelease(nativeRenderTexture);
-              }
-              if (textureRegistry)
-              {
-                  CFRelease(textureRegistry);
-              }
-              return;
-          }
-
-          // Textures must be managed on the platform (main) thread
-          // https://api.flutter.dev/ios-embedder/protocol_flutter_texture_registry-p.html
-          // See issue:
-          // https://github.com/flutter-webrtc/flutter-webrtc/issues/1914
-          dispatch_async(dispatch_get_main_queue(), ^{
-            riveLock();
-            if (rt->_riveRenderer != nullptr)
-            {
-                rt->_readWriteRing.nextRead();
-                [flutterTextureRegistry
-                    textureFrameAvailable:[rt flutterTextureId]];
-            }
-            riveUnlock();
-
-            // Release the temp retains now that we're done with Obj-C
-            if (nativeRenderTexture)
-            {
-                CFRelease(nativeRenderTexture);
-            }
-            if (textureRegistry)
-            {
-                CFRelease(textureRegistry);
-            }
-          });
-      }
-    }];
+    // signal the event to unblock Flutter
+    [commandBuffer encodeSignalEvent:rt->_event
+                               value:rt->_eventToSignalInPreCommit];
 }
 
 #pragma mark - Flutter plugin API
 
+- (void)createTextureWithWidth:(int64_t)width
+                        height:(int64_t)height
+                  textureIdOut:(int64_t*)textureIdOut
+                   rendererOut:(int64_t*)rendererOut
+{
+    RiveNativeRenderTexture* renderTexture =
+        [[RiveNativeRenderTexture alloc] initWithDevice:_metalDevice
+                                             andContext:_riveRendererContext
+                                               andQueue:_metalCommandQueue
+                                               andWidth:(int)width
+                                              andHeight:(int)height
+                                           registerWith:_textureRegistry];
+
+    // Store strongly so lifetime outlives async GPU callbacks.
+    _renderTextures[@(renderTexture.flutterTextureId)] = renderTexture;
+
+    *textureIdOut = renderTexture.flutterTextureId;
+    *rendererOut = (int64_t)renderTexture->_riveRenderer;
+}
+
+- (void)removeTextureWithId:(int64_t)textureId
+{
+    RiveNativeRenderTexture* texture = _renderTextures[@(textureId)];
+    if (texture)
+    {
+        // Break C++/Obj-C ownership before unregistering to avoid retain
+        // cycles and to ensure command buffer callbacks won't outlive
+        // the texture wrapper.
+        [texture destroyRenderer];
+        // Unregister first so Flutter stops asking for frames.
+        [_textureRegistry unregisterTexture:texture.flutterTextureId];
+
+        // Drop strong ref -> triggers -dealloc, which destroys the C++
+        // renderer and (on the C++ side) CFReleases the retained bridged
+        // pointers.
+        [_renderTextures removeObjectForKey:@(textureId)];
+    }
+}
+
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result
 {
-    if ([call.method isEqualToString:@"createTexture"])
-    {
-        NSNumber* width = call.arguments[@"width"];
-        NSNumber* height = call.arguments[@"height"];
-        if (width == nil || height == nil)
-        {
-            result([FlutterError
-                errorWithCode:@"CreateTexture Error"
-                      message:
-                          @"Missing width/height in RiveNative.createTexture"
-                      details:nil]);
-            return;
-        }
-
-        RiveNativeRenderTexture* renderTexture =
-            [[RiveNativeRenderTexture alloc] initWithDevice:_metalDevice
-                                                 andContext:_riveRendererContext
-                                                   andQueue:_metalCommandQueue
-                                                   andWidth:width.intValue
-                                                  andHeight:height.intValue
-                                               registerWith:_textureRegistry];
-
-        // Store strongly so lifetime outlives async GPU callbacks.
-        _renderTextures[@(renderTexture.flutterTextureId)] = renderTexture;
-
-        char buff[255];
-        snprintf(buff, sizeof(buff), "%p", renderTexture->_riveRenderer);
-
-        result(@{
-            @"textureId" : @(renderTexture.flutterTextureId),
-            @"renderer" : [NSString stringWithCString:buff
-                                             encoding:NSUTF8StringEncoding],
-        });
-
-        return;
-    }
-
     if ([call.method isEqualToString:@"getRenderContext"])
     {
         char buff[255];
@@ -382,43 +354,33 @@ void preCommitCallback(id<MTLCommandBuffer> commandBuffer,
         return;
     }
 
-    if ([call.method isEqualToString:@"removeTexture"])
-    {
-        NSNumber* texId = call.arguments[@"id"];
-        if (texId == nil)
-        {
-            result([FlutterError
-                errorWithCode:@"removeTexture Error"
-                      message:@"Missing id in RiveNative.removeTexture"
-                      details:nil]);
-            return;
-        }
-
-        RiveNativeRenderTexture* texture = _renderTextures[texId];
-        if (texture)
-        {
-            // Break C++/Obj-C ownership before unregistering to avoid retain
-            // cycles and to ensure command buffer callbacks won't outlive
-            // the texture wrapper.
-            [texture destroyRenderer];
-            // Unregister first so Flutter stops asking for frames.
-            [_textureRegistry unregisterTexture:texture.flutterTextureId];
-
-            // Drop strong ref -> triggers -dealloc, which destroys the C++
-            // renderer and (on the C++ side) CFReleases the retained bridged
-            // pointers.
-            [_renderTextures removeObjectForKey:texId];
-        }
-
-        result(nil);
-        return;
-    }
-
     result(FlutterMethodNotImplemented);
 }
 @end
 
 #pragma mark - Link dummy methods
+
+extern "C" void createTexture(int width,
+                              int height,
+                              int64_t* textureIdOut,
+                              int64_t* rendererOut)
+{
+    if (_instance)
+    {
+        [_instance createTextureWithWidth:width
+                                   height:height
+                             textureIdOut:textureIdOut
+                              rendererOut:rendererOut];
+    }
+}
+
+extern "C" void removeTexture(int64_t textureId)
+{
+    if (_instance)
+    {
+        [_instance removeTextureWithId:textureId];
+    }
+}
 
 // Forward declarations for FFI functions that need force-linking.
 // These are accessed via dlsym at runtime, so we reference them here

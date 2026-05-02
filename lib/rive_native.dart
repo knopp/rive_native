@@ -125,7 +125,7 @@ abstract base class RenderTexture {
   int get actualHeight;
 
   bool needsResize(int width, int height);
-  Future<void> makeRenderTexture(int width, int height);
+  void makeRenderTexture(int width, int height);
 
   bool get isReady;
   bool get isDisposed;
@@ -187,7 +187,7 @@ final class UnimplementedRenderTexture extends RenderTexture {
   int get actualWidth => throw UnimplementedError();
 
   @override
-  Future<void> makeRenderTexture(int width, int height) {
+  void makeRenderTexture(int width, int height) {
     throw UnimplementedError();
   }
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 #import <Metal/Metal.h>
 
+void preFlushCallback(id<MTLCommandBuffer>, void*);
 void preCommitCallback(id<MTLCommandBuffer>, void*, void*, void*);
 
 #endif

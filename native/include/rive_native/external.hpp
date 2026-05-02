@@ -72,10 +72,7 @@ PLUGIN_API void* createRiveRenderer(
     RendererEndCallback rendererEndCallback,
 #else
     void* queue,
-    ReadWriteRing* ring,
-    void* texture0,
-    void* texture1,
-    void* texture2,
+    void* texture,
 #endif
     uint32_t width,
     uint32_t height);
